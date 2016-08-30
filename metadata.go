@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"io/ioutil"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -24,7 +26,7 @@ type InstanceIdentity struct {
 	InstanceType       string `json:"instanceType"`
 	KernelID           string `json:"kernelId"`
 	PendingTime        string `json:"pendingTime"`
-	PrivateIp          string `json:"privateIp"`
+	PrivateIP          string `json:"privateIp"`
 	RamdiskID          string `json:"ramdiskId"`
 	Region             string `json:"region"`
 	Version            string `json:"version"`
@@ -35,23 +37,52 @@ var log = logging.MustGetLogger("metadata")
 
 var DefaultClient = New()
 
-type MetaData struct {
+type metaData struct {
 	*Client
 }
 
-type Dynamic struct {
+type dynamic struct {
 	*Client
 }
 
 type Client struct {
-	Client  *http.Client
-	BaseURL *url.URL
+	Client *http.Client
 
-	MetaData *MetaData
-	Dynamic  *Dynamic
+	BaseURL *url.URL
 }
 
-func (d *Dynamic) InstanceIdentity() (*InstanceIdentity, error) {
+func MetaData() *metaData {
+	return DefaultClient.MetaData()
+}
+
+func Dynamic() *dynamic {
+	return DefaultClient.Dynamic()
+}
+
+func (m *metaData) PublicHostName() (string, error) {
+	var s string
+	if req, err := m.NewRequest("GET", "/latest/meta-data/public-hostname", nil); err != nil {
+		return "", err
+	} else if err := m.Do(req, &s); err != nil {
+		return "", err
+	} else {
+		return s, nil
+	}
+}
+
+func (m *metaData) PublicIP() (net.IP, error) {
+	var s string
+	if req, err := m.NewRequest("GET", "/latest/meta-data/public-ipv4", nil); err != nil {
+		return nil, err
+	} else if err := m.Do(req, &s); err != nil {
+		return nil, err
+	} else {
+		ip := net.ParseIP(s)
+		return ip, nil
+	}
+}
+
+func (d *dynamic) InstanceIdentity() (*InstanceIdentity, error) {
 	var ii InstanceIdentity
 	if req, err := d.NewRequest("GET", "/latest/dynamic/instance-identity/document", nil); err != nil {
 		return nil, err
@@ -93,29 +124,32 @@ func (c *Client) NewRequest(method, urlStr string, body interface{}) (*http.Requ
 	return req, nil
 }
 
+func (c *Client) MetaData() *metaData {
+	return &metaData{c}
+}
+
+func (c *Client) Dynamic() *dynamic {
+	return &dynamic{c}
+}
+
 func New() *Client {
 	baseURL, err := url.Parse("http://169.254.169.254/")
 	if err != nil {
 		panic(err)
 	}
 
-	c := &Client{
+	return &Client{
 		Client:  http.DefaultClient,
 		BaseURL: baseURL,
 	}
-
-	c.MetaData = &MetaData{c}
-	c.Dynamic = &Dynamic{c}
-
-	return c
 }
 
-func (wd *Client) do(req *http.Request, v interface{}) error {
+func (c *Client) do(req *http.Request, v interface{}) error {
 	if b, err := httputil.DumpRequest(req, true); err == nil {
 		log.Debug(string(b))
 	}
 
-	resp, err := wd.Client.Do(req)
+	resp, err := c.Client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -136,6 +170,12 @@ func (wd *Client) do(req *http.Request, v interface{}) error {
 	}
 
 	switch v := v.(type) {
+	case *string:
+		if b, err := ioutil.ReadAll(resp.Body); err != nil {
+			return err
+		} else {
+			*v = string(b)
+		}
 	case io.Writer:
 		io.Copy(v, resp.Body)
 	case interface{}:
@@ -145,19 +185,6 @@ func (wd *Client) do(req *http.Request, v interface{}) error {
 	return nil
 }
 
-func (wd *Client) Do(req *http.Request, v interface{}) error {
-	return wd.do(req, v)
+func (c *Client) Do(req *http.Request, v interface{}) error {
+	return c.do(req, v)
 }
-
-/*
-metadata
-    .Dynamic()
-    .InstanceIdentity()
-
-metadata
-    .Dynamic
-    .InstanceIdentity()
-
-
-curl http://169.254.169.254/latest/dynamic/instance-identity/document^C
-*/
